@@ -11,6 +11,8 @@ import os
 
 import numpy as np
 import torch
+import datetime
+from netCDF4 import Dataset as DS
 from ai_models.model import Model
 
 import ai_models_fourcastnetv2.fourcastnetv2 as nvs
@@ -193,6 +195,7 @@ class FourCastNetv2(Model):
         )
 
         all_fields_numpy = all_fields.to_numpy(dtype=np.float32)
+        all_fields_numpy_copy = np.copy(all_fields_numpy)
 
         all_fields_numpy = self.normalise(all_fields_numpy)
 
@@ -205,6 +208,26 @@ class FourCastNetv2(Model):
         self.write_input_fields(all_fields)
 
         torch.set_grad_enabled(False)
+
+        #Dictionary to hold output and variable mappings
+        if 'n' in self.nc_or_grib:
+            out,mapping,varmap = initialize_nc_dict(self.lead_time,self.hour_steps)
+
+        #Save initial conditions to output dictionary and write to grib
+        for k, fs in enumerate(all_fields):
+            if 'n' in self.nc_or_grib:
+                shortname = fs.handle.get("shortName")
+                level = fs.handle.get("level")
+                mappedvar = varmap[shortname]
+                if level!=0:
+                    levelidx = mapping[level]
+                    out[mappedvar]['values'][0,levelidx,:,:] = all_fields_numpy_copy[ k, ...]
+                else:
+                    out[mappedvar]['values'][0,:,:] = all_fields_numpy_copy[ k, ...]
+            if 'g' in self.nc_or_grib:
+                self.write(
+                    all_fields_numpy_copy[ k, ...], check_nans=True, template=fs, step=0
+                )
 
         with self.stepper(self.hour_steps) as stepper:
             for i in range(self.lead_time // self.hour_steps):
@@ -242,11 +265,29 @@ class FourCastNetv2(Model):
                         )
 
                 for k, fs in enumerate(all_fields):
-                    self.write(
-                        output[0, k, ...], check_nans=True, template=fs, step=step
-                    )
+
+                    #Save output to dictionary to write nc
+                    if 'n' in self.nc_or_grib:
+                        shortname = fs.handle.get("shortName")
+                        level = fs.handle.get("level")
+                        mappedvar = varmap[shortname]
+                        if level!=0:
+                            levelidx = mapping[level]
+                            out[mappedvar]['values'][i+1,levelidx,:,:] = output[0, k, ...]
+                        else:
+                            out[mappedvar]['values'][i+1,:,:] = output[0, k, ...]
+
+                    #Write grib
+                    if 'g' in self.nc_or_grib:
+                        self.write(
+                            output[0, k, ...], check_nans=True, template=fs, step=step
+                        )
 
                 stepper(i, step)
+
+        #Write nc
+        if 'n' in self.nc_or_grib:
+            write_nc(out,self.lead_time,self.hour_steps,self.date,self.time,self.ncpath)
 
 
 def model(model_version, **kwargs):
@@ -257,3 +298,172 @@ def model(model_version, **kwargs):
         "latest": FourCastNetv2,
     }
     return models[model_version](**kwargs)
+
+def create_variable(f, name, dimensions, data, attrs):
+    if name in ['time','level']:
+        dtype = 'i4'
+    else:
+        dtype = 'f4'
+    var = f.createVariable(name, dtype, dimensions,compression='zlib',complevel=4)
+    var[:] = data
+    for attr_name, attr_value in attrs.items():
+        var.setncattr(attr_name, attr_value)
+
+def initialize_nc_dict(lead_time,hour_steps):
+    out = {
+        'u10': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': '10 metre U wind component', 'units': 'm s-1'
+        },
+        'v10': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': '10 metre V wind component', 'units': 'm s-1'
+        },
+        'u100': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': '100 metre U wind component', 'units': 'm s-1'
+        },
+        'v100': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': '100 metre V wind component', 'units': 'm s-1'
+        },
+        't2': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': '2 metre temperature', 'units': 'K'
+        },
+        'sp': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': 'Surface pressure', 'units': 'Pa'
+        },
+        'msl': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': 'Pressure reduced to MSL', 'units': 'Pa'
+        },
+        'tcwv': {
+            'values': np.zeros((lead_time // hour_steps + 1, 721, 1440)),
+            'name': 'Precipitable water', 'units': 'kg m-2'
+        },
+        't': {
+            'values': np.zeros((lead_time // hour_steps + 1, 13, 721, 1440)),
+            'name': 'Temperature', 'units': 'K'
+        },
+        'u': {
+            'values': np.zeros((lead_time // hour_steps + 1, 13, 721, 1440)),
+            'name': 'U component of wind', 'units': 'm s-1'
+        },
+        'v': {
+            'values': np.zeros((lead_time // hour_steps + 1, 13, 721, 1440)),
+            'name': 'V component of wind', 'units': 'm s-1'
+        },
+        'z': {
+            'values': np.zeros((lead_time // hour_steps + 1, 13, 721, 1440)),
+            'name': 'Geopotential', 'units': 'm2 s-2'
+        },
+        'r': {
+            'values': np.zeros((lead_time // hour_steps + 1, 13, 721, 1440)),
+            'name': 'Relative humidity', 'units': '%'
+        },
+    }
+
+    mapping = {
+        50:12,
+        100:11,
+        150:10,
+        200:9,
+        250:8,
+        300:7,
+        400:6,
+        500:5,
+        600:4,
+        700:3,
+        850:2,
+        925:1,
+        1000:0
+    }
+
+    varmap = {
+        "u":"u",
+        "v":"v",
+        "z":"z",
+        "t":"t",
+        "r":"r",
+        "10u":"u10",
+        "10v":"v10",
+        "100u":"u100",
+        "100v":"v100",
+        "sp":"sp",
+        "msl":"msl",
+        "tcwv":"tcwv",
+        "2t":"t2"
+    }
+
+
+    return out,mapping,varmap
+
+def write_nc(out,lead_time,hour_steps,date,time,path):
+    outdir = path
+    f = DS(outdir, 'w', format='NETCDF4')
+    f.createDimension('time', lead_time // hour_steps + 1)
+    f.createDimension('level', 13)
+    f.createDimension('longitude', 1440)
+    f.createDimension('latitude', 721)
+
+    year = str(date)[0:4]
+    month = str(date)[4:6]
+    day = str(date)[6:8]
+    hh = str(time)[0:2]
+    initdt = datetime.datetime.strptime(f"{year}{month}{day}{hh}","%Y%m%d%H")
+    inityr = str(initdt.year)
+    initmnth = str(initdt.month).zfill(2)
+    initday = str(initdt.day).zfill(2)
+    inithr = str(initdt.hour).zfill(2)
+    times = []
+    for i in np.arange(0,lead_time + hour_steps,hour_steps):
+        times.append(int((initdt + datetime.timedelta(hours=int(i))).timestamp()))
+
+    # Create time, longitude, latitude, and level variables in the NetCDF file
+    create_variable(
+        f, 'time', ('time',), np.array(times), {
+            'long_name': 'Date and Time', 'units': 'seconds since 1970-1-1',
+            'calendar': 'standard'
+        }
+    )
+    create_variable(
+        f, 'longitude', ('longitude',), np.arange(0, 360, 0.25), {
+            'long_name': 'Longitude', 'units': 'degree'
+        }
+    )
+    create_variable(
+        f, 'latitude', ('latitude',), np.arange(-90, 90.25, 0.25)[::-1], {
+            'long_name': 'Latitude', 'units': 'degree'
+        }
+    )
+    create_variable(
+        f, 'level', ('level',), np.array(
+            [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
+        )[::-1], {'long_name': 'Isobaric surfaces', 'units': 'hPa'}
+    )
+
+    # Create variables for each meteorological parameter
+    for variable in [
+        'u10', 'v10', 'u100', 'v100', 't2', 'msl', 'sp', 'tcwv', 't', 'u', 'v', 'z', 'r'
+    ]:
+        dims = ('time', 'level', 'latitude', 'longitude') if variable in [
+            'u', 'v', 'z', 't', 'r'
+        ] else ('time', 'latitude', 'longitude')
+        create_variable(
+            f, variable, dims, out[variable]['values'], {
+                'long_name': out[variable]['name'], 'units': out[variable]['units']
+            }
+        )
+
+    f.Conventions = 'CF-1.8'
+    f.model_name = 'FourCastNet'
+    f.model_version = 'v2-small'
+    f.initialization_model = 'GFS'
+    f.initialization_time = '%s-%s-%sT%s:00:00' % (inityr,initmnth,initday,inithr)
+    f.first_forecast_hour = str(0)
+    f.last_forecast_hour = str(lead_time)
+    f.forecast_hour_step = str(hour_steps)
+    f.creation_time = (datetime.datetime.utcnow()).strftime('%Y-%m-%dT%H:%M:%S')
+    f.close()
