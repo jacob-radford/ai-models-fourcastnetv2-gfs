@@ -20,25 +20,21 @@ def read(fname):
     return io.open(file_path, encoding="utf-8").read()
 
 
-version = None
-for line in read("ai_models_fourcastnetv2/__init__.py").split("\n"):
-    if line.startswith("__version__"):
-        version = line.split("=")[-1].strip()[1:-1]
-
+version = "0.0.3"
 
 assert version
 
 
 setuptools.setup(
-    name="ai-models-fourcastnetv2",
+    name="ai-models-fourcastnetv2-gfs",
     version=version,
-    description="An ai-models plugin to run the Nvidia spherical harmonics FourCastNet v2 (small) model",
+    description="An ai-models plugin to run the Nvidia spherical harmonics FourCastNet v2 (small) model with additional options to use GFS and GDAS initial conditions and output to netCDF",
     long_description=read("README.md"),
     long_description_content_type="text/markdown",
     author="European Centre for Medium-Range Weather Forecasts (ECMWF)",
     author_email="software.support@ecmwf.int",
     license="Apache License Version 2.0",
-    url="https://github.com/ecmwf-lab/ai-models-fourcastnetv2",
+    url="https://github.com/ecmwf-lab/ai-models-fourcastnetv2-gfs",
     packages=setuptools.find_packages(),
     include_package_data=True,
     install_requires=[
@@ -49,9 +45,9 @@ setuptools.setup(
     zip_safe=True,
     keywords="tool",
     entry_points={
-        "ai_models.model": [
-            # "fourcastnetv2 = ai_models_fourcastnetv2.model:model",
-            "fourcastnetv2-small = ai_models_fourcastnetv2.model:model"
+        "ai_models_gfs.model": [
+            # "fourcastnetv2 = ai_models_fourcastnetv2_gfs.model:model",
+            "fourcastnetv2-small = ai_models_fourcastnetv2_gfs.model:model"
         ]
     },
     classifiers=[
